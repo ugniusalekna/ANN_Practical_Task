@@ -1,5 +1,5 @@
-# ANN_Practical_Task
-A practical task for the course Artificial Neural Networks
+# ANN_Research_Project
+A research project for the course Artificial Neural Networks
 
 This repository hosts a project for the ANN course. The project focuses on the application of Physics-Informed Neural Networks (PINNs)
 to reconstruct blood flow fields from limited and noisy datasets, a crucial task in scenarios where high-quality blood flow measurements
