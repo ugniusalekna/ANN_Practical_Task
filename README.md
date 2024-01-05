@@ -1,4 +1,4 @@
-# Blood flow reconstruction using Physics-Informed Neural Networks
+# Blood flow reconstruction using PINNs
 A research project for the course Artificial Neural Networks
 
 This repository hosts a project for the ANN course. The project focuses on the application of Physics-Informed Neural Networks (PINNs)
