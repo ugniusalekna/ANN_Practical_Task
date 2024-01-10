@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from data_loading import FlowFieldDataset, train_test_split
 from nn_model import SuperResolutionPICNN
 from model_utils import train_model, test_model, evaluate_model
-from visualize_data import plot_results, print_metrics, show_plots
+from visualize_data import plot_results, print_metrics, show_plots, create_gif_from_dataset
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f'Device {device}')
@@ -47,20 +47,22 @@ if __name__ == '__main__':
     test_loss_save_path = 'logs/test_losses'
     # model_load_path = 'results/CNN/run_1/CNN_model_params_47.pt'
     
+    # output_gif_path = 'data/blood_flow_simulations/random_data_samples.gif'
+    # create_gif_from_dataset(dataset, output_gif_path, num_of_samples=100, fps=10)
     
-    # - - - - - Training - - - - - 
+    # # - - - - - Training - - - - - 
 
     data_losses, physics_losses = train_model(model, train_loader, optimizer, criterion, num_epochs, device, alpha=alpha,
                                               model_save_path=model_save_path, loss_save_path=loss_save_path, log_interval=log_interval,
                                               is_physics_informed=is_physics_informed, norm='L2', plot_progress=False, add_constraints=False)
 
-    # - - - - - Testing - - - - -
+    # # - - - - - Testing - - - - -
     
     avg_loss, results = test_model(model, test_loader, criterion, device, test_loss_save_path=test_loss_save_path, log_interval=log_interval,
                                    is_physics_informed=is_physics_informed)    
     velocity_metrics = evaluate_model(model, test_loader, device)
 
-    # - - - - - Plotting - - - - -
+    # # - - - - - Plotting - - - - -
 
     plot_results(num_epochs, results, data_losses, physics_losses, log_interval=log_interval, num_samples_to_plot=10)
     print_metrics(velocity_metrics)

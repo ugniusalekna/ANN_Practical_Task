@@ -1,4 +1,5 @@
 import os
+import random
 import imageio
 import numpy as np
 import matplotlib.pyplot as plt
@@ -63,7 +64,7 @@ def plot_numpy_matrices(u_true, u_pred, main_title="Flow Field", subtitle_1="", 
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 
-    plt.show(block=False)
+    # plt.show(block=False)
 
     return fig, axs
 
@@ -104,29 +105,27 @@ def plot_with_transparent_mask(image, mask, alpha=0.5, plot_size=6):
 
   plt.show(block=False)
 
-def create_gif_from_matched_files(velocity_dir, pressure_dir, matched_files, output_gif_path, fps=10):
+def create_gif_from_dataset(dataset, output_gif_path, num_of_samples=100, fps=10):
 
-  images = []
-  processed_samples = 0
+    images = []
+    processed_samples = 0
+    
+    for _ in range(num_of_samples):
 
-  for v_file, p_file in matched_files:
-    print(processed_samples)
-    if processed_samples >= 100:
-      break
-    u_values_np = np.load(os.path.join(velocity_dir, v_file))
-    p_values_np = np.load(os.path.join(pressure_dir, p_file))
+        index = random.randint(0, len(dataset) - 1)
+        u_true, u_noisy = dataset[index]
 
-    fig, _ = plot_numpy_matrices(u_values_np, p_values_np, main_title=f'{v_file} and {p_file}')
-    fig.canvas.draw()
+        fig, _ = plot_numpy_matrices(u_true, u_noisy, main_title="Flow Field", subtitle_1="True Velocity Field", subtitle_2="Noisy Velocity Field")
+        fig.canvas.draw()
 
-    image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-    image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    images.append(image)
-    plt.close(fig)
-
-    processed_samples += 1
-
-  imageio.mimsave(output_gif_path, images, fps=fps)
+        image = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        image = image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        images.append(image)
+        plt.close(fig)
+        
+        processed_samples += 1
+    
+    imageio.mimsave(output_gif_path, images, fps=fps)
   
 def display_predicted_fields(u_lr, u_hr, u_pred, epoch, i):
     # Plot progress every 'log_interval' iterations
