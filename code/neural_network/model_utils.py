@@ -74,8 +74,8 @@ def compute_navier_stokes_loss(u_pred, mask, rho, mu, device, norm='L2'):
     #     # plot_numpy_matrices(to_numpy(vector_field[j]), to_numpy(p[j][0]))
     #     plot_with_transparent_mask(to_numpy(vector_field[j]), to_numpy(mask[j][0]))
 
-    # dy, dx = 0.006 / u.shape[2], 0.006 / u.shape[3]
-    dy, dx = 0.006, 0.006
+    dy, dx = 0.006 / u.shape[2], 0.006 / u.shape[3]
+    # dy, dx = 0.006, 0.006
     
     du_dx, du_dy = compute_derivative(u, dx, dy, order=1)
     dv_dx, dv_dy = compute_derivative(v, dx, dy, order=1)
