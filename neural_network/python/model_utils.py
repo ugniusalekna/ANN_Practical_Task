@@ -3,12 +3,11 @@ import os
 import csv
 import time
 import torch
-from scipy.ndimage import gaussian_filter, zoom
-from skimage.filters import threshold_otsu
 from sklearn.metrics import mean_squared_error
 from skimage.metrics import structural_similarity as ssim
 
-from visualize_data import plot_numpy_matrices
+from visualize_data import display_predicted_fields, plot_numpy_matrices, plot_with_transparent_mask
+from image_processing import segment_vessel_otsu, gaussian_blur_tensor
 
 def to_numpy(tensor):
     return tensor.detach().cpu().numpy()
@@ -30,93 +29,165 @@ def monitor_gpu_memory():
     else:
         return 0, 0
 
-def create_meshgrid(height, width, device, num_sampled_points=None):
 
-    y_coords, x_coords = torch.meshgrid(torch.linspace(0, height, 280), torch.linspace(0, width, 280), indexing='xy')
-    coords = torch.stack([x_coords, y_coords], dim=0)
+def compute_derivative(tensor, dx, dy, order=1):
+    derivative_x = torch.zeros_like(tensor)
+    derivative_y = torch.zeros_like(tensor)
 
-    if num_sampled_points == None:
-        coords = coords.to(device)
-        return coords.requires_grad_(True)
+    # Central differences (interior)
+    if order == 1:
+        derivative_y[:, :, 1:-1, :] = (tensor[:, :, 2:, :] - tensor[:, :, :-2, :]) / (2 * dy)
+        derivative_x[:, :, :, 1:-1] = (tensor[:, :, :, 2:] - tensor[:, :, :, :-2]) / (2 * dx)
+    elif order == 2:
+        derivative_y[:, :, 1:-1, :] = (tensor[:, :, 2:, :] - 2 * tensor[:, :, 1:-1, :] + tensor[:, :, :-2, :]) / (dy ** 2)
+        derivative_x[:, :, :, 1:-1] = (tensor[:, :, :, 2:] - 2 * tensor[:, :, :, 1:-1] + tensor[:, :, :, :-2]) / (dx ** 2)
 
-    flat_coords = coords.view(2, -1).transpose(0, 1)  # Shape: [280*280, 2]
+    # Forward differences (first row/col)
+    if order == 1:
+        derivative_y[:, :, 0, :] = (tensor[:, :, 1, :] - tensor[:, :, 0, :]) / dy
+        derivative_x[:, :, :, 0] = (tensor[:, :, :, 1] - tensor[:, :, :, 0]) / dx
+    elif order == 2:
+        derivative_y[:, :, 0, :] = (tensor[:, :, 2, :] - 2 * tensor[:, :, 1, :] + tensor[:, :, 0, :]) / (dy ** 2)
+        derivative_x[:, :, :, 0] = (tensor[:, :, :, 2] - 2 * tensor[:, :, :, 1] + tensor[:, :, :, 0]) / (dx ** 2)
 
-    indices = torch.randperm(flat_coords.size(0))[:num_sampled_points]
-    sampled_flat_coords = torch.zeros_like(flat_coords)
-    sampled_flat_coords[indices] = flat_coords[indices]
+    # Backward differences (last row/col)
+    if order == 1:
+        derivative_y[:, :, -1, :] = (tensor[:, :, -1, :] - tensor[:, :, -2, :]) / dy
+        derivative_x[:, :, :, -1] = (tensor[:, :, :, -1] - tensor[:, :, :, -2]) / dx
+    elif order == 2:
+        derivative_y[:, :, -1, :] = (tensor[:, :, -1, :] - 2 * tensor[:, :, -2, :] + tensor[:, :, -3, :]) / (dy ** 2)
+        derivative_x[:, :, :, -1] = (tensor[:, :, :, -1] - 2 * tensor[:, :, :, -2] + tensor[:, :, :, -3]) / (dx ** 2)
 
-    sampled_coords = sampled_flat_coords.transpose(0, 1).view(2, 280, 280).unsqueeze(0)
-    sampled_coords = sampled_coords.to(device)
+    return derivative_x, derivative_y
 
-    return sampled_coords.requires_grad_(True)
+def compute_navier_stokes_loss(u_pred, mask, rho, mu, device, norm='L2'):
 
-def segment_vessel_otsu(velocity_field, pressure_field, gamma, sigma, target_size, device):
-    def apply_blur(field, gamma, sigma):
-        field_transformed = np.maximum(field, 0) ** gamma
-        return gaussian_filter(field_transformed / np.max(field_transformed), sigma=sigma)
+    u, v = u_pred[:, [0]], u_pred[:, [1]]
 
-    def upscale(field, target_size):
-        zoom_factors = [target_size[i] / field.shape[i+2] for i in range(2)]
-        return zoom(field, zoom=[1, 1, *zoom_factors], order=3)  # Bicubic interpolation
+    # blur for smoother derivatives at boundaries
+    kernel_size, sigma = 11, 5
+    u, v = gaussian_blur_tensor(u, kernel_size, sigma, device), gaussian_blur_tensor(v, kernel_size, sigma, device)
 
-    velocity_np = to_numpy(velocity_field)
-    pressure_np = to_numpy(pressure_field)
+    # Plot mask and masked regions
+    # vector_field = torch.cat((u, v), dim=1)
+    # for j in range(u.shape[0]):
+    #     # plot_numpy_matrices(to_numpy(vector_field[j]), to_numpy(p[j][0]))
+    #     plot_with_transparent_mask(to_numpy(vector_field[j]), to_numpy(mask[j][0]))
 
-    if velocity_np.shape[2:] != target_size:
-        velocity_np = upscale(velocity_np, target_size)
+    # dy, dx = 0.006 / u.shape[2], 0.006 / u.shape[3]
+    dy, dx = 0.006, 0.006
+    
+    du_dx, du_dy = compute_derivative(u, dx, dy, order=1)
+    dv_dx, dv_dy = compute_derivative(v, dx, dy, order=1)
 
-    if pressure_np.shape[2:] != target_size:
-        pressure_np = upscale(pressure_np, target_size)
+    omega = dv_dx - du_dy
+    
+    domega_dx, domega_dy = compute_derivative(omega, dx, dy, order=1)
+    d2omega_dx2, d2omega_dy2 = compute_derivative(omega, dx, dy, order=1)
 
-    velocity_magnitude = np.linalg.norm(velocity_np, axis=1)
-    blurred_velocity = apply_blur(velocity_magnitude, gamma, sigma)
-    blurred_pressure = apply_blur(pressure_np.squeeze(1), gamma, sigma)
-
-    velocity_mask = (blurred_velocity > threshold_otsu(blurred_velocity)).astype(np.float32)
-    pressure_mask = (blurred_pressure > threshold_otsu(blurred_pressure)).astype(np.float32)
-
-    combined_mask = np.maximum(velocity_mask[:, np.newaxis, :, :], pressure_mask[:, np.newaxis, :, :])
-
-    return torch.from_numpy(combined_mask).float().to(device)
-
-def compute_navier_stokes_loss(u_pred, p_pred, coordinates, mask, rho, mu, device):
-    u, v, p = u_pred[:, [0]] * mask, u_pred[:, [1]] * mask, p_pred * mask
-
-    du_dxy = torch.autograd.grad(u, coordinates, grad_outputs=torch.ones_like(u).to(device), retain_graph=True, create_graph=True)[0]
-    dv_dxy = torch.autograd.grad(v, coordinates, grad_outputs=torch.ones_like(v).to(device), retain_graph=True, create_graph=True)[0]
-    dp_dxy = torch.autograd.grad(p, coordinates, grad_outputs=torch.ones_like(p).to(device), retain_graph=True, create_graph=True)[0]
-
-    d2u_dxy2 = torch.autograd.grad(du_dxy, coordinates, grad_outputs=torch.ones_like(du_dxy).to(device), create_graph=True)[0]
-    d2v_dxy2 = torch.autograd.grad(dv_dxy, coordinates, grad_outputs=torch.ones_like(dv_dxy).to(device), create_graph=True)[0]
-
-    du_dx, du_dy = du_dxy[:, [0]], du_dxy[:, [1]]
-    dv_dx, dv_dy = dv_dxy[:, [0]], dv_dxy[:, [1]]
-    dp_dx, dp_dy = dp_dxy[:, [0]], dp_dxy[:, [1]]
-    d2u_dx2, d2u_dy2 = d2u_dxy2[:, [0]], d2u_dxy2[:, [1]]
-    d2v_dx2, d2v_dy2 = d2v_dxy2[:, [0]], d2v_dxy2[:, [1]]
+    du_dx *= mask
+    du_dy *= mask
+    dv_dx *= mask
+    dv_dy *= mask
+    domega_dx *= mask
+    domega_dy *= mask
+    d2omega_dx2 *= mask
+    d2omega_dy2 *= mask
 
     continuity = du_dx + dv_dy
-    continuity_loss = torch.max(torch.abs(continuity))
+    momentum = rho * (u * domega_dx + v * domega_dy) - mu * (d2omega_dx2 + d2omega_dy2)
 
-    momentum_u = rho * (u * du_dx + v * du_dy) + dp_dx - mu * (d2u_dx2 + d2u_dy2)
-    momentum_v = rho * (u * dv_dx + v * dv_dy) + dp_dy - mu * (d2v_dx2 + d2v_dy2)
-    momentum_loss = torch.max(torch.abs(momentum_u)) + torch.max(torch.abs(momentum_v))
+    match norm:
+        case 'L1':
+            continuity_loss = torch.sum(torch.abs(continuity))
+            momentum_loss = torch.sum(torch.abs(momentum))
+        case 'L2':
+            continuity_loss = torch.sqrt(torch.sum(continuity**2))
+            momentum_loss = torch.sqrt(torch.sum(momentum**2))
+        case 'Linf':
+            continuity_loss = torch.max(torch.abs(continuity))
+            momentum_loss = torch.max(torch.abs(momentum))
 
     physics_loss = continuity_loss + momentum_loss
+    
+    return physics_loss
 
-    return physics_loss / 1000
+def apply_constraints(u_pred, mask, physics_loss):
 
-def train_model(model, train_loader, optimizer, criterion, num_epochs, device, alpha=0.5, model_save_path=None, loss_save_path=None, log_interval=10, is_physics_informed=False):
+    u, v = u_pred[:, [0]] * mask, u_pred[:, [1]] * mask
+
+    params = {
+        'lambda_ns':    1.2,
+        'lambda_u':     0.2,
+        'lambda_v':     0.1,
+        'lambda_or':    5.0,
+    }
+    
+    def variation_penalty(field):
+        field_interior = field * mask
+        std_dev_interior = torch.std(field_interior, dim=[2, 3])
+        return -torch.mean(std_dev_interior)
+
+    # 1. Penalize constant values inside the vessel
+    u_penalty = variation_penalty(u)
+    v_penalty = variation_penalty(v)
+
+    # 2. Penalize non-zero values outside the vessel
+    inverse_mask = 1 - mask
+    or_penalty = torch.mean((u * inverse_mask) ** 2) + \
+                 torch.mean((v * inverse_mask) ** 2)
+
+    constrained_physics_loss = params['lambda_ns'] * physics_loss + \
+                         params['lambda_u'] * u_penalty + params['lambda_v'] * v_penalty + params['lambda_or'] * or_penalty
+    
+    return constrained_physics_loss
+
+def weighted_loss(u_pred, u_true, criterion, mask, beta):
+    
+    data_loss = criterion(u_pred, u_true)
+    
+    squared_diff = (u_pred - u_true) ** 2
+    weighted_squared_diff = mask * squared_diff
+    loss = weighted_squared_diff.mean()
+    
+    return beta * loss + (1 - beta) * data_loss
+
+def compute_loss(model, u_hr, u_lr, criterion, device, alpha=0, is_physics_informed=False, norm='L2', add_constraints=False):
+    
+    data_scaling_factor = 100000
+    
+    u_pred = model(u_lr)
+    mask = segment_vessel_otsu(u_hr, gamma=0.5, sigma=2.0, target_size=(280, 280), device=device)
+    data_loss = data_scaling_factor * weighted_loss(u_pred, u_hr, criterion, mask, beta=0.5)
+    # data_loss = criterion(u_pred, u_hr)
+
+    if is_physics_informed and alpha > 0:
+        physics_loss =  compute_navier_stokes_loss(u_pred, mask, rho=1060, mu=0.0035, device=device, norm=norm)
+        # true_field_physics_loss = compute_navier_stokes_loss(u_hr, mask, rho=1060, mu=0.0035, device=device, norm=norm)
+        loss = (1 - alpha) * data_loss + alpha * physics_loss
+    else:
+        loss = data_loss
+        physics_loss = 0.0
+        
+        if add_constraints:
+            physics_loss = apply_constraints(u_pred, mask, physics_loss)
+        
+    return [loss, data_loss, physics_loss], u_pred
+
+
+def train_model(model, train_loader, optimizer, criterion, num_epochs, device, alpha=0,
+                model_save_path=None, loss_save_path=None, log_interval=10, is_physics_informed=False, norm='L2',
+                plot_progress=False, add_constraints=False):
     if device.type == 'cuda':
         torch.cuda.empty_cache()
     model.train()
 
     all_data_losses = []
     all_physics_losses = []
-
+    
     model_file_base_name = 'PICNN_model_params' if is_physics_informed else 'CNN_model_params'
     loss_file_base_name = 'PICNN_train_losses' if is_physics_informed else 'CNN_train_losses'
-    
+
     if model_save_path is not None:
         os.makedirs(model_save_path, exist_ok=True)
         save_model_file = get_unique_filename(model_save_path, model_file_base_name, 'pt')
@@ -135,64 +206,38 @@ def train_model(model, train_loader, optimizer, criterion, num_epochs, device, a
 
         for epoch in range(num_epochs):
             epoch_start_time = time.time()
-            
-            running_loss = 0.0
-            running_data_loss = 0.0
-            running_physics_loss = 0.0
-            
-            for i, ((u_hr, p_hr), (u_lr, p_lr)) in enumerate(train_loader):
-                u_hr, p_hr = u_hr.to(device), p_hr.to(device)
-                u_lr, p_lr = u_lr.to(device), p_lr.to(device)
+
+            for i, (u_hr, u_lr) in enumerate(train_loader):
+                u_hr, u_lr = u_hr.to(device), u_lr.to(device)
 
                 optimizer.zero_grad()
 
-                if is_physics_informed:
-                    coordinates = create_meshgrid(0.006, 0.006, device, num_sampled_points=100).requires_grad_(True)
-                    coordinates = coordinates.expand(u_lr.size(0), -1, -1, -1)
-                    u_pred, p_pred = model(u_lr, p_lr, coordinates)
-                    mask = segment_vessel_otsu(u_lr, p_lr, gamma=0.5, sigma=1.5, target_size=(280, 280), device=device)
-                    data_loss = (1000 * criterion(u_pred, u_hr) + criterion(p_pred, p_hr))
-                    physics_loss = compute_navier_stokes_loss(u_pred, p_pred, coordinates, mask, rho=1060, mu=0.0035, device=device)
-                    loss = (1 - alpha) * data_loss + alpha * physics_loss
-                else:
-                    u_pred, p_pred = model(u_lr, p_lr)
-                    data_loss = (1000 * criterion(u_pred, u_hr) + criterion(p_pred, p_hr))
-                    loss = data_loss
-
+                losses, u_pred = compute_loss(model, u_hr, u_lr, criterion, device, alpha, is_physics_informed, norm, add_constraints)
+                loss, data_loss, physics_loss = losses
+                
                 loss.backward()
                 optimizer.step()
-
-                running_loss += loss.item()
-                running_data_loss += data_loss.item() if is_physics_informed else loss.item()
-                running_physics_loss += physics_loss.item() if is_physics_informed else 0
 
                 if model_save_path is not None and (epoch * len(train_loader) + i) % 1000 == 0:
                     allocated_memory_MB, cached_memory_MB = monitor_gpu_memory()
                     print(f"Allocated Memory: {allocated_memory_MB:.2f} MB, Cached Memory: {cached_memory_MB:.2f} MB")
                     if i > 0:
-                        print(f'Should be saving now!')
+                        print(f'Model state saving at Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}]')
                         torch.save(model.state_dict(), save_model_file)
-                        # u_lr_np, p_lr_np = to_numpy(u_lr), to_numpy(p_lr)
-                        # u_hr_np, p_hr_np = to_numpy(u_hr), to_numpy(p_hr)
-                        # u_pred_np, p_pred_np = to_numpy(u_pred), to_numpy(p_pred)
-
-                        # for j in range(u_pred_np.shape[0]):
-                        #     plot_numpy_matrices(u_lr_np[j].transpose(1, 2, 0), p_lr_np[j][0], main_title=f"Noisy: Epoch {epoch}, step {i}", plot_size=6)
-                        #     plot_numpy_matrices(u_hr_np[j].transpose(1, 2, 0), p_hr_np[j][0], main_title=f"True: Epoch {epoch}, step {i}", plot_size=6)
-                        #     plot_numpy_matrices(u_pred_np[j].transpose(1, 2, 0), p_pred_np[j][0], main_title=f"Predicted: Epoch {epoch}, step {i}", plot_size=6)
-
 
                 if (i + 1) % log_interval == 0:
-                    writer.writerow([epoch, i, data_loss.item(), physics_loss.item() if is_physics_informed else '', loss.item()])
-                    print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Total Loss: {running_loss / log_interval:.6f}, Data Loss: {running_data_loss / log_interval:.6f}, Physics Loss: {running_physics_loss / log_interval:.6f}')
-                    all_data_losses.append(running_data_loss / log_interval)
-                    if is_physics_informed:
-                        all_physics_losses.append(running_physics_loss / log_interval)
-                    
-                    running_loss = 0.0
-                    running_data_loss = 0.0
-                    running_physics_loss = 0.0
+                # if (epoch + 1) % log_interval == 0:
 
+                    writer.writerow([epoch, i, data_loss.item(), physics_loss.item() if is_physics_informed and alpha > 0 else '', loss.item()])
+                    print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Total Loss: {loss:.6f}, Data Loss: {data_loss:.6f}, Physics Loss: {physics_loss:.6f}')
+                    all_data_losses.append(data_loss.item())
+                    if is_physics_informed:
+                        all_physics_losses.append(physics_loss.item())
+
+                    if plot_progress:
+                        display_predicted_fields(u_lr, u_hr, u_pred, epoch, i)
+
+            file.flush()
             epoch_duration = time.time() - epoch_start_time
             print(f'Epoch [{epoch+1}/{num_epochs}] completed in {epoch_duration:.2f} s')
 
@@ -205,7 +250,7 @@ def train_model(model, train_loader, optimizer, criterion, num_epochs, device, a
         print(f'Model params saved to: {save_model_file}')
         print(f'Losses saved to: {save_loss_file}')
 
-    
+
     if is_physics_informed:
         return all_data_losses, all_physics_losses
     else:
@@ -215,7 +260,7 @@ def test_model(model, test_loader, criterion, device, test_loss_save_path=None, 
     model.eval()
     total_loss = 0
     results = []
-    
+
     if test_loss_save_path is not None:
         loss_file_base_name = 'PICNN_test_losses' if is_physics_informed else 'CNN_test_losses'
         os.makedirs(test_loss_save_path, exist_ok=True)
@@ -225,87 +270,62 @@ def test_model(model, test_loader, criterion, device, test_loss_save_path=None, 
         writer = csv.writer(file)
         writer.writerow(['Step', 'Loss'])
 
-        for i, ((u_hr, p_hr), (u_lr, p_lr)) in enumerate(test_loader):
-            u_hr, p_hr = u_hr.to(device), p_hr.to(device)
-            u_lr, p_lr = u_lr.to(device), p_lr.to(device)
+        for i, (u_hr, u_lr) in enumerate(test_loader):
+            u_hr, u_lr = u_hr.to(device), u_lr.to(device)
 
-            if is_physics_informed:
-                coordinates = create_meshgrid(0.006, 0.006, device, num_sampled_points=100)
-                coordinates = coordinates.expand(u_lr.size(0), -1, -1, -1)
-                u_pred, p_pred = model(u_lr, p_lr, coordinates)
-                loss = (100 * criterion(u_pred, u_hr) + criterion(p_pred, p_hr))
-                
-            else:
-                u_pred, p_pred = model(u_lr, p_lr)
-                loss = (100 * criterion(u_pred, u_hr) + criterion(p_pred, p_hr))
+            u_pred = model(u_lr)
+            loss = 100 * criterion(u_pred, u_hr)
 
             total_loss += loss
-            
+
             if (i + 1) % log_interval == 0:
                 writer.writerow([i, loss.item()])
-                print(f'Step [{i+1}/{len(test_loader)}], Total Loss: {loss.item():.6f}')
+                print(f'Step [{i+1}/{len(test_loader)}], Data Loss: {loss.item():.6f}')
 
             results.append({
-                'noisy': (u_lr.cpu().numpy(), p_lr.cpu().numpy()),
-                'predicted': (u_pred.cpu().numpy(), p_pred.cpu().numpy()),
-                'true': (u_hr.cpu().numpy(), p_hr.cpu().numpy())
+                'noisy': u_lr.cpu().numpy(),
+                'predicted': u_pred.cpu().numpy(),
+                'true': u_hr.cpu().numpy(),
             })
-
+            
+    if test_loss_save_path is not None:
+        print(f'Test Losses saved to: {save_loss_file}')
+    
     avg_loss = total_loss / len(test_loader)
     print(f'Average Test Loss: {avg_loss:.6f}')
 
     return to_numpy(avg_loss), results
 
-def evaluate_model(model, test_loader, device, is_physics_informed=False):
+def evaluate_model(model, test_loader, device):
     model.eval()
 
     def psnr(y_true, y_pred):
-        mse = mean_squared_error(y_true, y_pred)
-        max_pixel = 1.0  # Assuming pixel values range from 0 to 1
-        return 20 * np.log10(max_pixel / np.sqrt(mse))
+        data_scaling_factor = 100000
+        mse = data_scaling_factor * mean_squared_error(y_true, y_pred)
+        return 20 * np.log10(np.max(y_true) / np.sqrt(mse))
 
     total_mse_velocity = total_psnr_velocity = total_ssim_velocity = 0
-    total_mse_pressure = total_psnr_pressure = total_ssim_pressure = 0
 
     with torch.no_grad():
-        for (u_hr, p_hr), (u_lr, p_lr) in test_loader:
-            u_hr, p_hr = u_hr.to(device), p_hr.to(device)
-            u_lr, p_lr = u_lr.to(device), p_lr.to(device)
+        for (u_hr, u_lr) in test_loader:
+            u_hr, u_lr = u_hr.to(device), u_lr.to(device)
 
-            if is_physics_informed:
-                coordinates = create_meshgrid(0.006, 0.006, device, num_sampled_points=100)
-                coordinates = coordinates.expand(u_lr.size(0), -1, -1, -1)
-                u_pred, p_pred = model(u_lr, p_lr, coordinates)
-            else:
-                u_pred, p_pred = model(u_lr, p_lr)
-            
+            u_pred = model(u_lr)
+
             u_hr_np, u_pred_np = to_numpy(u_hr), to_numpy(u_pred)
-            p_hr_np, p_pred_np = to_numpy(p_hr), to_numpy(p_pred)
-                                 
+
             for i in range(u_hr_np.shape[0]): # one batch
-                
+
                 u_hr_batch, u_pred_batch = u_hr_np[i], u_pred_np[i]
                 for j in range(u_hr_batch.shape[0]):
                     total_mse_velocity += mean_squared_error(u_hr_batch[j], u_pred_batch[j])
                     total_psnr_velocity += psnr(u_hr_batch[j], u_pred_batch[j])
-                    total_ssim_velocity += ssim(u_hr_batch[j], u_pred_batch[j], data_range=u_hr_batch[j].max()-u_hr_batch[j].min())                 
-
-                p_hr_batch, p_pred_batch = p_hr_np[i].squeeze(0), p_pred_np[i].squeeze(0)
-                total_mse_pressure += mean_squared_error(p_hr_batch, p_pred_batch)
-                total_psnr_pressure += psnr(p_hr_batch, p_pred_batch)
-                total_ssim_pressure += ssim(p_hr_batch, p_pred_batch, data_range=p_hr_batch.max()-p_hr_batch.min())
-            
+                    total_ssim_velocity += ssim(u_hr_batch[j], u_pred_batch[j], data_range=u_hr_batch[j].max()-u_hr_batch[j].min())
 
     avg_mse_velocity = total_mse_velocity / len(test_loader)
     avg_psnr_velocity = total_psnr_velocity / len(test_loader)
     avg_ssim_velocity = total_ssim_velocity / len(test_loader)
 
-    avg_mse_pressure = total_mse_pressure / len(test_loader)
-    avg_psnr_pressure = total_psnr_pressure / len(test_loader)
-    avg_ssim_pressure = total_ssim_pressure / len(test_loader)
-
     velocity_metrics = [avg_mse_velocity, avg_psnr_velocity, avg_ssim_velocity]
-    pressure_metrics = [avg_mse_pressure, avg_psnr_pressure, avg_ssim_pressure]
-    
-    return velocity_metrics, pressure_metrics
-    
+
+    return velocity_metrics
