@@ -30,7 +30,7 @@ numerical simulations, performed using the _FEniCS Project_ - an open-source com
 isthmus, and a vessel with an aneurysm - each parameterized, so that many different meshes could be generated. 
 
 For simulating fluid dynamics within generated meshes, the incompressible Navier-Stokes equations were solved using 
-a modified Chorin’s projection method, called the incremental pressure correction scheme. To make the simulated fields
+a modified Chorin’s projection method, also called the incremental pressure correction scheme. To make the simulated fields
 applicable for training, interpolation was executed, where the simulated fluid flow data was mapped onto a high-resolution square grid.
 
 To replicate MRV data, the resolution of the true velocity data was reduced by half, and Gaussian noise was added. 
