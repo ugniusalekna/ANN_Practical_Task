@@ -37,6 +37,7 @@ def segment_vessel_otsu(velocity_field, gamma, sigma, target_size, device):
 
     return torch.from_numpy(combined_mask_erosion).float().to(device)
 
+# Gaussian blur for torch tensors
 def gaussian_kernel(size, sigma):
     coords = torch.arange(size, dtype=torch.float32)
     coords -= size // 2
