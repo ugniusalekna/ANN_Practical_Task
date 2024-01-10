@@ -31,9 +31,9 @@ isthmus, and a vessel with an aneurysm - each parameterized, so that many differ
 
 For simulating fluid dynamics within generated meshes, the incompressible Navier-Stokes equations were solved using 
 a modified Chorin’s projection method, also called the incremental pressure correction scheme. To make the simulated fields
-applicable for training, interpolation was executed, where the simulated fluid flow data was mapped onto a high-resolution square grids.
+applicable for training, interpolation was executed, where the simulated fluid flow data was mapped onto a high-resolution square grid.
 
-To replicate MRV data, the resolution of the true velocity data was reduced by half, and Gaussian noise was added. 
+To replicate magnetic resonance velocimetry (MRV) data, the resolution of the true velocity data was reduced by half, and Gaussian noise was added. 
 Each sample was augmented by flipping it across the horizontal and vertical axes, resulting in a total of 9656 samples.
 
 **Physics-Informed Neural Network:** The network comprises multiple convolutional layers with batch normalization, ReLU activation, 
