@@ -1,3 +1,0 @@
-#!/bin/bash
-# Execute this file to recompile locally
-c++ -Wall -shared -fPIC -std=c++14 -O3 -fno-math-errno -fno-trapping-math -ffinite-math-only -I/usr/local/include -I/usr/local/include/eigen3 -I/usr/local/lib/python3.10/dist-packages/ffc/backends/ufc -I/root/.cache/dijitso/include dolfin_expression_eb03d18253a8ef19e433939e3a966c1e.cpp -L/usr/local/lib -L/root/.cache/dijitso/lib -Wl,-rpath,/root/.cache/dijitso/lib -lmpi -lpetsc -lslepc -lm -ldl -lz -lhdf5 -lboost_timer -ldolfin -olibdijitso-dolfin_expression_eb03d18253a8ef19e433939e3a966c1e.so
