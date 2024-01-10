@@ -12,8 +12,8 @@ the reconstruction of both the flow field and the boundary shape using PINNs.
 ## Repository Structure
 
 * `code/`: Contains two main categories:
-*   `generate_data/`: All files related to synthetic data generation
-*   `neural_network/`: All files for PINN implementation
+*     `generate_data/`: All files related to synthetic data generation
+*     `neural_network/`: All files for PINN implementation
 * `data/`: Test datasets since the original dataset is too large to upload
 * `logs/`: Training and testing losses logs, model parameters
 * `results/`: Selected results of the best training runs 
