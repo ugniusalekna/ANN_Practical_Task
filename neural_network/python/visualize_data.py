@@ -29,29 +29,34 @@ def plot_numpy_data(coordinates, connectivity, u_values, p_values, plot_size=8):
     plt.colorbar()
     plt.show()
 
-def plot_numpy_matrices(u_values_np, p_values_np, main_title="Flow Field", plot_size=6):
+def plot_numpy_matrices(u_true, u_pred, main_title="Flow Field", subtitle_1="", subtitle_2="", plot_size=6):
 
     fig, axs = plt.subplots(1, 2, figsize=(plot_size * 2, plot_size))
     fig.suptitle(main_title, fontsize=16)
 
-    magnitude = np.linalg.norm(u_values_np, axis=2)
-    vel_img = axs[0].imshow(magnitude, cmap='viridis', norm=Normalize(vmin=np.min(magnitude), vmax=np.max(magnitude)))    # origin='lower'
-    axs[0].set_title('Velocity Magnitude')
-    fig.colorbar(vel_img, ax=axs[0], fraction=0.046, pad=0.04)
+    magnitude_true = np.linalg.norm(u_true, axis=0)
+    magnitude_pred = np.linalg.norm(u_pred, axis=0)
 
-    pres_img = axs[1].imshow(p_values_np, cmap='plasma', norm=Normalize(vmin=np.min(p_values_np), vmax=np.max(p_values_np)))
-    axs[1].set_title('Pressure Field')
-    fig.colorbar(pres_img, ax=axs[1], fraction=0.046, pad=0.04)
+    u_img_true = axs[0].imshow(magnitude_true, cmap='viridis', norm=Normalize(vmin=np.min(magnitude_true), vmax=np.max(magnitude_true)))    # origin='lower'
+    axs[0].set_title(subtitle_1)
+    fig.colorbar(u_img_true, ax=axs[0], fraction=0.046, pad=0.04)
+
+    u_img_pred = axs[1].imshow(magnitude_pred, cmap='viridis', norm=Normalize(vmin=np.min(magnitude_pred), vmax=np.max(magnitude_pred)))    # origin='lower'
+    axs[1].set_title(subtitle_2)
+    fig.colorbar(u_img_pred, ax=axs[1], fraction=0.046, pad=0.04)
 
     domain_max = 0.006
     n_ticks = 5
-    tick_locations = np.linspace(0, u_values_np.shape[0]-1, n_ticks)
+    tick_locations_true = np.linspace(0, u_true.shape[1]-1, n_ticks)
+    tick_locations_pred = np.linspace(0, u_pred.shape[1]-1, n_ticks)
     tick_labels = np.linspace(0, domain_max, n_ticks)
+    axs[0].set_xticks(tick_locations_true)
+    axs[0].set_yticks(tick_locations_true)
+    axs[1].set_xticks(tick_locations_pred)
+    axs[1].set_yticks(tick_locations_pred)
 
     for ax in axs:
-        ax.set_xticks(tick_locations)
         ax.set_xticklabels(['{:.3f}'.format(tl) for tl in tick_labels])
-        ax.set_yticks(tick_locations)
         ax.set_yticklabels(['{:.3f}'.format(tl) for tl in tick_labels])
         ax.set_xlabel('X Coordinate (m)')
         ax.set_ylabel('Y Coordinate (m)')
@@ -67,18 +72,24 @@ def plot_with_transparent_mask(image, mask, alpha=0.5, plot_size=6):
   fig, axs = plt.subplots(1, 2, figsize=(plot_size * 2, plot_size))
 
   if len(image.shape) == 3:
-    image = np.linalg.norm(image, axis=2)
+    image = np.linalg.norm(image, axis=0)
+    vel_img = axs[0].imshow(image, cmap='viridis', norm=Normalize(vmin=np.min(image), vmax=np.max(image)))    # origin='lower'
+    axs[0].set_title('Velocity Magnitude with Mask On Top')
+    axs[0].imshow(mask, cmap='jet', interpolation='none', alpha=alpha)
+    fig.colorbar(vel_img, ax=axs[0], fraction=0.046, pad=0.04)
 
-  axs[0].imshow(image, cmap='gray', interpolation='none')
-  axs[0].imshow(mask, cmap='jet', interpolation='none', alpha=alpha)
-  axs[0].set_title('Transparent Mask On Top')
+  else:
+    pres_img = axs[0].imshow(image, cmap='plasma', norm=Normalize(vmin=np.min(image), vmax=np.max(image)))
+    axs[0].set_title('Pressure Field with Mask On Top')
+    axs[0].imshow(mask, cmap='jet', interpolation='none', alpha=alpha)
+    fig.colorbar(pres_img, ax=axs[0], fraction=0.046, pad=0.04)
 
   axs[1].imshow(mask, cmap='viridis')
   axs[1].set_title('Mask')
 
   domain_max = 0.006
   n_ticks = 5
-  tick_locations = np.linspace(0, image.shape[0]-1, n_ticks)
+  tick_locations = np.linspace(0, image.shape[1]-1, n_ticks)
   tick_labels = np.linspace(0, domain_max, n_ticks)
 
   for ax in axs:
@@ -117,7 +128,16 @@ def create_gif_from_matched_files(velocity_dir, pressure_dir, matched_files, out
 
   imageio.mimsave(output_gif_path, images, fps=fps)
   
-  
+def display_predicted_fields(u_lr, u_hr, u_pred, epoch, i):
+    # Plot progress every 'log_interval' iterations
+    u_lr_np, u_hr_np = to_numpy(u_lr), to_numpy(u_hr)
+    u_pred_np = to_numpy(u_pred)
+    
+    for j in range(u_pred_np.shape[0]):
+        if i == 0 and epoch == 0:
+            plot_numpy_matrices(u_lr_np[j], u_hr_np[j], main_title=f"True Flow Fields", subtitle_1="Noisy Flow Field", subtitle_2="True Flow Field", plot_size=6)
+        plot_numpy_matrices(u_lr_np[j], u_pred_np[j], main_title=f"Predicted: Epoch {epoch+1}, step {i+1}", subtitle_1="Noisy Flow Field", subtitle_2="Predicted Flow Field", plot_size=6)
+
 def plot_results(num_epochs, results, data_losses, physics_losses=None, log_interval=10, num_samples_to_plot=0):
 
     num_steps_per_epoch = len(data_losses) // num_epochs
@@ -149,24 +169,22 @@ def plot_results(num_epochs, results, data_losses, physics_losses=None, log_inte
       for i in range(min(num_samples_to_plot, len(results))):
           result = results[i]
 
-          u_lr_np, p_lr_np = result['noisy']
-          u_hr_np, p_hr_np = result['true']
-          u_pred_np, p_pred_np = result['predicted']
-          
-          # u_lr_np, p_lr_np = to_numpy(u_lr), to_numpy(p_lr)
-          # u_hr_np, p_hr_np = to_numpy(u_hr), to_numpy(p_hr)
-          # u_pred_np, p_pred_np = to_numpy(u_pred), to_numpy(p_pred)
-
+          u_lr_np = result['noisy']
+          u_hr_np = result['true']
+          u_pred_np = result['predicted']
+        
           for j in range(u_pred_np.shape[0]):
-              plot_numpy_matrices(u_lr_np[j].transpose(1, 2, 0), p_lr_np[j][0], main_title="Noisy Flow Field", plot_size=6)
-              plot_numpy_matrices(u_hr_np[j].transpose(1, 2, 0), p_hr_np[j][0], main_title="True Flow Field", plot_size=6)
-              plot_numpy_matrices(u_pred_np[j].transpose(1, 2, 0), p_pred_np[j][0], main_title="Predicted Flow Field", plot_size=6)
+              plot_numpy_matrices(u_lr_np[j], u_hr_np[j], main_title=f"True Flow Fields", subtitle_1="Noisy Flow Field", subtitle_2="True Flow Field", plot_size=6)
+              plot_numpy_matrices(u_lr_np[j], u_pred_np[j], main_title=f"Predicted Flow Field", subtitle_1="Noisy Flow Field", subtitle_2="Predicted Flow Field", plot_size=6)
 
+          # for j in range(u_pred_np.shape[0]):
+          #     plot_numpy_matrices(u_lr_np[j], p_lr_np[j][0], main_title="Noisy Flow Field", plot_size=6)
+          #     plot_numpy_matrices(u_hr_np[j], p_hr_np[j][0], main_title="True Flow Field", plot_size=6)
+          #     plot_numpy_matrices(u_pred_np[j], p_pred_np[j][0], main_title="Predicted Flow Field", plot_size=6)
 
-def print_metrics(velocity_metrics, pressure_metrics):
+def print_metrics(velocity_metrics):
   
     avg_mse_velocity, avg_psnr_velocity, avg_ssim_velocity = velocity_metrics
-    avg_mse_pressure, avg_psnr_pressure, avg_ssim_pressure = pressure_metrics
 
     print("╔" + "═" * 60 + "╗")
     print("║ Results Summary                                            ║")                                                                                    
@@ -174,12 +192,7 @@ def print_metrics(velocity_metrics, pressure_metrics):
     print(f"║                   Average MSE: {avg_mse_velocity:.4f}")
     print(f"║     Velocity      Average PSNR: {avg_psnr_velocity:.4f} dB")
     print(f"║                   Average SSIM: {avg_ssim_velocity:.4f}")
-    print("╠" + "═" * 60 + "╣")
-    print(f"║                   Average MSE: {avg_mse_pressure:.4f}")
-    print(f"║     Pressure      Average PSNR: {avg_psnr_pressure:.4f} dB")
-    print(f"║                   Average SSIM: {avg_ssim_pressure:.4f}")
-    print("╚" + "═" * 60 + "╝")
-    
-    
+    print("╚" + "═" * 60 + "╝")    
+      
 def show_plots():
   plt.show(block=True)
